@@ -367,7 +367,8 @@ void ECBackend::handle_recovery_read_complete(
     from[i->first.shard].claim(i->second);
   }
   dout(10) << __func__ << ": " << from << dendl;
-  ECUtil::decode(sinfo, ec_impl, from, target);
+  int r = ECUtil::decode(sinfo, ec_impl, from, target);
+  assert(r == 0);
   if (attrs) {
     op.xattrs.swap(*attrs);
 
@@ -1481,7 +1482,8 @@ ECUtil::HashInfoRef ECBackend::get_hash_info(
       ghobject_t(hoid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
       &st);
     ECUtil::HashInfo hinfo(ec_impl->get_chunk_count());
-    if (r >= 0 && st.st_size > 0) {
+    // XXX: What does it mean if there is no object on disk?
+    if (r >= 0) {
       dout(10) << __func__ << ": found on disk, size " << st.st_size << dendl;
       bufferlist bl;
       r = store->getattr(
@@ -1492,8 +1494,12 @@ ECUtil::HashInfoRef ECBackend::get_hash_info(
       if (r >= 0) {
 	bufferlist::iterator bp = bl.begin();
 	::decode(hinfo, bp);
-	assert(hinfo.get_total_chunk_size() == (uint64_t)st.st_size);
-      } else {
+	if (hinfo.get_total_chunk_size() != (uint64_t)st.st_size) {
+	  dout(0) << __func__ << ": Mismatch of total_chunk_size "
+			       << hinfo.get_total_chunk_size() << dendl;
+	  return ECUtil::HashInfoRef();
+	}
+      } else if (st.st_size > 0) { // If empty object and no hinfo, create it
 	return ECUtil::HashInfoRef();
       }
     }
@@ -1641,11 +1647,15 @@ struct CallClientContexts :
 	   ++j) {
 	to_decode[j->first.shard].claim(j->second);
       }
-      ECUtil::decode(
+      int r = ECUtil::decode(
 	ec->sinfo,
 	ec->ec_impl,
 	to_decode,
 	&bl);
+      if (r < 0) {
+        res.r = r;
+        goto out;
+      }
       assert(i->second.second);
       assert(i->second.first);
       i->second.first->substr_of(
