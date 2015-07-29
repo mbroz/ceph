@@ -165,6 +165,25 @@ function rados_get_data_eio() {
     rados_put_get $dir $poolname $objname 1 $recovery || return 1
 }
 
+function rados_get_data_bad_size() {
+    local dir=$1
+    shift
+    local shard_id=$1
+    shift
+
+    # inject eio to speificied shard
+    #
+    local poolname=pool-jerasure
+    local objname=obj-size-$$-$shard_id
+    local -a initial_osds=($(get_osds $poolname $objname))
+    local osd_id=${initial_osds[$shard_id]}
+    local last=$((${#initial_osds[@]} - 1))
+    rados_put $dir $poolname $objname || return 1
+    touch $dir/EMPTY
+    objectstore_tool $dir $osd_id $objname set-bytes $dir/EMPTY || return 1
+    rados_get $dir $poolname $objname 1 || return 1
+}
+
 #
 # These two test cases try to validate the following behavior:
 #  For object on EC pool, if there is one shard having read error (
@@ -191,6 +210,28 @@ function TEST_rados_get_subread_eio_shard_1() {
     # inject eio into replica OSD (1)
     local shard_id=1
     rados_get_data_eio $dir $shard_id || return 1
+    delete_pool $poolname
+}
+
+function TEST_rados_get_bad_size_shard_0() {
+    local dir=$1
+    setup_osds false || return 1
+
+    local poolname=pool-jerasure
+    create_erasure_coded_pool $poolname || return 1
+    local shard_id=0
+    rados_get_data_bad_size $dir $shard_id || return 1
+    delete_pool $poolname
+}
+
+function TEST_rados_get_bad_size_shard_1() {
+    local dir=$1
+    setup_osds false || return 1
+
+    local poolname=pool-jerasure
+    create_erasure_coded_pool $poolname || return 1
+    local shard_id=1
+    rados_get_data_bad_size $dir $shard_id || return 1
     delete_pool $poolname
 }
 
