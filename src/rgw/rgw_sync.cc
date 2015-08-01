@@ -7,6 +7,7 @@
 #include "rgw_sync.h"
 #include "rgw_metadata.h"
 #include "rgw_rest_conn.h"
+#include "rgw_tools.h"
 
 
 #define dout_subsys ceph_subsys_rgw
@@ -183,74 +184,72 @@ static void _aio_completion_notifier_cb(librados::completion_t cb, void *arg)
 #define CLONE_OPS_WINDOW 16
 
 
-struct RGWMetaSyncStatus {
-  uint32_t num_shards;
+struct rgw_sync_marker {
+  uint16_t state;
+  string marker;
 
-  enum StateOptions {
+  rgw_sync_marker() : state(0) {}
+
+  void encode(bufferlist& bl) const {
+    ENCODE_START(1, 1, bl);
+    ::encode(state, bl);
+    ::encode(marker, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(bufferlist::iterator& bl) {
+     DECODE_START(1, bl);
+    ::decode(state, bl);
+    ::decode(marker, bl);
+     DECODE_FINISH(bl);
+  }
+};
+WRITE_CLASS_ENCODER(rgw_sync_marker)
+
+struct RGWMetaSyncGlobalStatus {
+  enum SyncState {
     StateInit = 0,
     StateBuildingFullSyncMaps = 1,
-    StateFullSync = 2,
-    StateIncrementalSync = 3,
+    StateSync = 2,
   };
 
-  struct sync_marker {
-    int state;
-    string marker;
+  uint16_t state;
 
-    sync_marker() : state((int)StateInit) {}
-  };
-  map<int, sync_marker> markers;
+  void encode(bufferlist& bl) const {
+    ENCODE_START(1, 1, bl);
+    ::encode(state, bl);
+    ENCODE_FINISH(bl);
+  }
 
+  void decode(bufferlist::iterator& bl) {
+     DECODE_START(1, bl);
+     ::decode(state, bl);
+     DECODE_FINISH(bl);
+  }
+
+  RGWMetaSyncGlobalStatus() : state((int)StateInit) {}
 };
+WRITE_CLASS_ENCODER(RGWMetaSyncGlobalStatus)
 
-class RGWSyncStatusStore {
+class RGWMetaSyncStatusManager {
   RGWRados *store;
   librados::IoCtx ioctx;
 
-  RGWMetaSyncStatus status;
-  int read_status();
+  string global_status_oid;
+  rgw_obj global_status_obj;
+
+  RGWMetaSyncGlobalStatus global_status;
+  map<int, rgw_sync_marker> shard_markers;
+
 public:
-  RGWSyncStatusStore(RGWRados *_store) : store(_store) {}
+  RGWMetaSyncStatusManager(RGWRados *_store) : store(_store) {}
 
   int init();
+  int read_global_status();
+  int set_state(RGWMetaSyncGlobalStatus::SyncState state);
 };
 
-#if 0
-int RGWSyncStatusStore::read_status()
-{
-  string marker;
-
-#define MAX_OMAP_ENTRIES 100
-  do {
-    map<string, bufferlist> vals;
-    int r = ioctx.omap_get_vals(mdlog_sync_status_oid, marker, MAX_OMAP_ENTRIES, &vals);
-
-    if (r < 0) {
-      return r;
-    }
-    if (vals.size() != MAX_OMAP_ENTRIES) {
-      break;
-    }
-
-    for (map<string, bufferlist>::iterator miter = vals.begin(); miter != vals.end(); ++miter) {
-      const string& k = miter->first;
-      bufferlist& bl = miter->second;
-
-      bufferlist::iterator iter = bl.begin();
-      try {
-	::decode(s, iter);
-	status.set_entry(shard_id, s);
-      } catch (buffer::error& err) {
-	ldout(store->ctx(), 0) << "ERROR: failed to decode entry for k=" << k << dendl;
-      }
-    }
-  } while (true);
-
-  return 0;
-}
-#endif
-
-int RGWSyncStatusStore::init()
+int RGWMetaSyncStatusManager::init()
 {
   const char *log_pool = store->get_zone_params().log_pool.name.c_str();
   librados::Rados *rados = store->get_rados_handle();
@@ -260,13 +259,124 @@ int RGWSyncStatusStore::init()
     return r;
   }
 
-#if 0
-  r = read_status();
-  if (r < 0) {
-    return r;
-  }
-#endif
+  global_status_oid = "mdlog.state.global";
+  global_status_obj = rgw_obj(store->get_zone_params().log_pool, global_status_oid);
 
+  return 0;
+}
+
+int RGWMetaSyncStatusManager::read_global_status()
+{
+  RGWObjectCtx obj_ctx(store, NULL);
+
+  RGWRados::SystemObject src(store, obj_ctx, global_status_obj);
+  RGWRados::SystemObject::Read rop(&src);
+
+  bufferlist bl;
+
+  int ret = rop.read(0, -1, bl, NULL);
+  if (ret < 0 && ret != -ENOENT) {
+    return ret;
+  }
+
+  if (ret != -ENOENT) {
+    bufferlist::iterator iter = bl.begin();
+    try {
+      ::decode(global_status, iter);
+    } catch (buffer::error& err) {
+      ldout(store->ctx(), 0) << "ERROR: failed to decode global mdlog status" << dendl;
+    }
+  }
+  return 0;
+}
+
+int RGWMetaSyncStatusManager::set_state(RGWMetaSyncGlobalStatus::SyncState state)
+{
+  global_status.state = state;
+
+  bufferlist bl;
+  ::encode(global_status, bl);
+
+  int ret = rgw_put_system_obj(store, store->get_zone_params().log_pool, global_status_oid, bl.c_str(), bl.length(), false, NULL, 0, NULL);
+  if (ret < 0) {
+    return ret;
+  }
+
+  return 0;
+}
+
+class RGWReadSyncStatusOp : public RGWAsyncOp {
+  RGWRados *store;
+  librados::IoCtx ioctx;
+
+  RGWMetaSyncStatusManager sync_store;
+
+  int shard_id;
+  string marker;
+
+  enum State {
+    Init                      = 0,
+    ReadSyncStatus            = 1,
+    ReadSyncStatusComplete    = 2,
+    Done                      = 100,
+    Error                     = 200,
+  } state;
+
+  int set_state(State s, int ret = 0) {
+    state = s;
+    return ret;
+  }
+public:
+  RGWReadSyncStatusOp(RGWRados *_store, RGWAsyncOpsStack *_ops_stack, int _id) : RGWAsyncOp(_ops_stack), store(_store),
+                           sync_store(_store),
+			   shard_id(_id),
+                           state(RGWReadSyncStatusOp::Init) {}
+
+  int operate();
+
+  int state_init();
+  int state_read_sync_status();
+  int state_read_sync_status_complete();
+
+  bool is_done() { return (state == Done || state == Error); }
+  bool is_error() { return (state == Error); }
+};
+
+int RGWReadSyncStatusOp::operate()
+{
+  switch (state) {
+    case Init:
+      ldout(store->ctx(), 20) << __func__ << ": shard_id=" << shard_id << ": init request" << dendl;
+      return state_init();
+    case ReadSyncStatus:
+      ldout(store->ctx(), 20) << __func__ << ": shard_id=" << shard_id << ": reading shard status" << dendl;
+      return state_read_sync_status();
+    case ReadSyncStatusComplete:
+      ldout(store->ctx(), 20) << __func__ << ": shard_id=" << shard_id << ": reading shard status complete" << dendl;
+      return state_read_sync_status_complete();
+    case Done:
+      ldout(store->ctx(), 20) << __func__ << ": shard_id=" << shard_id << ": done" << dendl;
+      break;
+    case Error:
+      ldout(store->ctx(), 20) << __func__ << ": shard_id=" << shard_id << ": error" << dendl;
+      break;
+  }
+
+  return 0;
+}
+
+int RGWReadSyncStatusOp::state_init()
+{
+  return 0;
+}
+
+int RGWReadSyncStatusOp::state_read_sync_status()
+{
+  return 0;
+}
+
+int RGWReadSyncStatusOp::state_read_sync_status_complete()
+{
   return 0;
 }
 
@@ -274,7 +384,6 @@ class RGWMetaSyncOp : public RGWAsyncOp {
   RGWRados *store;
   RGWMetadataLog *mdlog;
   RGWHTTPManager *http_manager;
-  RGWSyncStatusStore sync_store;
 
   int shard_id;
   string marker;
@@ -299,7 +408,7 @@ public:
   RGWMetaSyncOp(RGWRados *_store, RGWHTTPManager *_mgr, RGWAsyncOpsStack *_ops_stack,
 		int _id) : RGWAsyncOp(_ops_stack), store(_store),
                            mdlog(store->meta_mgr->get_log()),
-                           http_manager(_mgr), sync_store(_store),
+                           http_manager(_mgr),
 			   shard_id(_id),
                            max_entries(CLONE_MAX_ENTRIES),
 			   http_op(NULL),
@@ -340,11 +449,7 @@ int RGWMetaSyncOp::operate()
 
 int RGWMetaSyncOp::state_init()
 {
-  int ret = sync_store.init();
-  if (ret < 0) {
-    return set_state(Error, ret);
-  }
-  return set_state(ReadSyncStatus);
+  return 0;
 }
 
 int RGWMetaSyncOp::state_read_sync_status()
