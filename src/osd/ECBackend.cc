@@ -892,7 +892,6 @@ void ECBackend::handle_sub_read(
       ++i) {
     bufferhash h(-1);
     uint64_t total_read = 0;
-    uint64_t total_req = 0;
     list<boost::tuple<uint64_t, uint64_t, uint32_t> >::iterator j;
     for (j = i->second.begin(); j != i->second.end(); ++j) {
       bufferlist bl;
@@ -910,7 +909,6 @@ void ECBackend::handle_sub_read(
       } else {
         dout(20) << __func__ << " read request=" << j->get<1>() << " r=" << r << " len=" << bl.length() << dendl;
 	total_read += r;
-	total_req += j->get<1>();
         h << bl;
 	reply->buffers_read[i->first].push_back(
 	  make_pair(
@@ -921,21 +919,13 @@ void ECBackend::handle_sub_read(
     }
     // If all reads happened then lets check digest
     if (j == i->second.end()) {
-      dout(20) << __func__ << ": TOTAL read request=" << total_req << " read=" << total_read << dendl;
       dout(20) << __func__ << ": Checking hash of " << i->first << dendl;
       ECUtil::HashInfoRef hinfo = get_hash_info(i->first);
-      // Warning: Shard may be corrupted
-      if (total_read != total_req)
-	dout(5) << __func__ << ": Read len mismatch req=" << total_req
-		<< " len=" << total_read << " hash chunk size="
-		<< (hinfo ? hinfo->get_total_chunk_size() : 0) << dendl;
-      if (!hinfo || total_read != hinfo->get_total_chunk_size() ||
-	  h.digest() != hinfo->get_chunk_hash(shard)) {
+      if (!hinfo || (total_read == hinfo->get_total_chunk_size() &&
+	  h.digest() != hinfo->get_chunk_hash(shard))) {
         if (!hinfo)
 	  dout(5) << __func__ << ": No hinfo for " << i->first << dendl;
-        else if (total_read != hinfo->get_total_chunk_size())
-	  dout(5) << __func__ << ": Bad read size for " << i->first << dendl;
-	else if (h.digest() != hinfo->get_chunk_hash(shard))
+	else
 	  dout(5) << __func__ << ": Bad hash for " << i->first << " digest 0x" << hex << h.digest() << " expected 0x" << hinfo->get_chunk_hash(shard) << dec << dendl;
 	reply->buffers_read.erase(i->first);
 	reply->errors[i->first] = -EIO;
