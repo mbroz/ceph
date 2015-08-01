@@ -20,8 +20,7 @@ int ECUtil::decode(
   for (map<int, bufferlist>::iterator i = to_decode.begin();
        i != to_decode.end();
        ++i) {
-    if (i->second.length() != total_chunk_size)
-      return -EIO;
+    assert(i->second.length() == total_chunk_size);
   }
 
   if (total_chunk_size == 0)
@@ -57,8 +56,7 @@ int ECUtil::decode(
   for (map<int, bufferlist>::iterator i = to_decode.begin();
        i != to_decode.end();
        ++i) {
-    if (i->second.length() != total_chunk_size)
-      return -EIO;
+    assert(i->second.length() == total_chunk_size);
   }
 
   if (total_chunk_size == 0)
