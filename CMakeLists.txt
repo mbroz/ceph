@@ -129,10 +129,6 @@ option(WITH_KVS "Key value store is here" ON)
 
 # remote block storage
 option(WITH_RBD "Remote block storage is here" ON)
-if(${WITH_RBD})
-find_package(blkid REQUIRED)
-set(HAVE_LIBBLKID ${BLKID_FOUND})
-endif(${WITH_RBD})
 
 option(WITH_LEVELDB "LevelDB is here" ON)
 if(${WITH_LEVELDB})
@@ -209,6 +205,9 @@ option(WITH_RADOSGW "Rados Gateway is enabled" ON)
 
 #option for CephFS
 option(WITH_CEPHFS "CephFS is enabled" ON)
+
+find_package(blkid REQUIRED)
+set(HAVE_LIBBLKID ${BLKID_FOUND})
 
 # Now create a useable config.h
 configure_file(
