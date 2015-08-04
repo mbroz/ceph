@@ -36,6 +36,9 @@ Debian Squeeze.  Backports for Ceph can be found at ceph.com/debian-leveldb.
 Building Ceph
 =============
 
+Autotools
+---------
+
 Developers, please refer to the [Developer
 Guide](doc/dev/quick_guide.rst) for more information, otherwise, you
 can build the server daemons, and FUSE client, by executing the
@@ -46,6 +49,26 @@ following:
 	make
 
 (Note that the FUSE client will only be built if libfuse is present.)
+
+CMake
+-----
+
+Prerequisite:
+        CMake 2.8.11
+
+In tree build instructions:
+
+        mkdir build
+        cd build
+	cmake [options] ..
+	make
+
+Out of tree build instructions:
+
+        mkdir build
+        cd build
+	cmake [options] /path/to/ceph/src/dir
+	make
 
 Dependencies
 ------------
