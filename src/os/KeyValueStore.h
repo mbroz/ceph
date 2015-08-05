@@ -463,6 +463,7 @@ class KeyValueStore : public ObjectStore,
       store->op_queue.pop_front();
       return osr;
     }
+    using ThreadPool::WorkQueue<OpSequencer>::_process;
     void _process(OpSequencer *osr, ThreadPool::TPHandle &handle) {
       store->_do_op(osr, handle);
     }
@@ -594,6 +595,7 @@ class KeyValueStore : public ObjectStore,
 
   void start_sync() {}
   void sync() {}
+  using ObjectStore::sync;
   void flush() {}
   void sync_and_flush() {}
 
@@ -654,7 +656,7 @@ class KeyValueStore : public ObjectStore,
                                                  const ghobject_t &oid);
 
   int check_get_rc(const coll_t cid, const ghobject_t& oid, int r, bool is_equal_size);
-  void dump_start(const std::string file);
+  void dump_start(const std::string &file);
   void dump_stop();
   void dump_transactions(list<ObjectStore::Transaction*>& ls, uint64_t seq,
                          OpSequencer *osr);

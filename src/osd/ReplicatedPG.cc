@@ -3601,8 +3601,8 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
         op.extent.length = total_read;
 
-        ::encode(m, osd_op.outdata);
-        ::encode(data_bl, osd_op.outdata);
+        ::encode_destructively(bl, osd_op.outdata);
+        ::encode_destructively(data_bl, osd_op.outdata);
 
 	ctx->delta_stats.num_rd_kb += SHIFT_ROUND_UP(op.extent.length, 10);
 	ctx->delta_stats.num_rd++;
@@ -4025,6 +4025,9 @@ int ReplicatedPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
           resp.clones.push_back(ci);
         }
+	if (result < 0) {
+	  break;
+	}	  
         if (ssc->snapset.head_exists &&
 	    !ctx->obc->obs.oi.is_whiteout()) {
           assert(obs.exists);
@@ -6637,7 +6640,7 @@ void ReplicatedPG::finish_promote(int r, CopyResults *results,
     OpContext *tctx = repop->ctx;
     tctx->at_version = get_next_version();
     filter_snapc(tctx->new_snapset.snaps);
-    vector<snapid_t> new_clones(tctx->new_snapset.clones.size());
+    vector<snapid_t> new_clones;
     for (vector<snapid_t>::iterator i = tctx->new_snapset.clones.begin();
 	 i != tctx->new_snapset.clones.end();
 	 ++i) {

@@ -779,6 +779,7 @@ protected:
   };
   friend std::ostream &operator<<(ostream& out, const lowprecision_t& v);
 
+  using OSDUtilizationDumper<TextTable>::dump_item;
   virtual void dump_item(const CrushTreeDumper::Item &qi,
 			 float &reweight,
 			 int64_t kb,
@@ -857,6 +858,7 @@ public:
   }
 
 protected:
+  using OSDUtilizationDumper<Formatter>::dump_item;
   virtual void dump_item(const CrushTreeDumper::Item &qi,
 			 float &reweight,
 			 int64_t kb,
@@ -3127,8 +3129,8 @@ bool OSDMonitor::preprocess_command(MonOpRequestRef op)
         << " pool '" << poolstr << "' (" << pool << ")"
         << " object '" << fullobjname << "' ->"
         << " pg " << pgid << " (" << mpgid << ")"
-        << " -> up (" << up << ", p" << up_p << ") acting ("
-        << acting << ", p" << acting_p << ")";
+        << " -> up (" << pg_vector_string(up) << ", p" << up_p << ") acting ("
+        << pg_vector_string(acting) << ", p" << acting_p << ")";
       rdata.append(ds);
     }
   } else if ((prefix == "osd scrub" ||
@@ -3896,8 +3898,8 @@ void OSDMonitor::get_pools_health(
 	detail->push_back(make_pair(HEALTH_WARN, ss.str()));
     }
 
-    float warn_threshold = g_conf->mon_pool_quota_warn_threshold/100;
-    float crit_threshold = g_conf->mon_pool_quota_crit_threshold/100;
+    float warn_threshold = (float)g_conf->mon_pool_quota_warn_threshold/100;
+    float crit_threshold = (float)g_conf->mon_pool_quota_crit_threshold/100;
 
     if (pool.quota_max_objects > 0) {
       stringstream ss;
